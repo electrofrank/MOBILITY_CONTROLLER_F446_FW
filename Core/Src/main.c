@@ -29,6 +29,8 @@
 /* USER CODE BEGIN Includes */
 #include "retarget.h"
 #include <stdio.h>
+#include "stdbool.h"
+#include <math.h>
 #include "Odrive_CanIf.h"
 /* USER CODE END Includes */
 
@@ -39,6 +41,15 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define AllSystem_IN_BUSY              1
+#define AllSystem_IN_NO_ACTIVE_CHILD   0
+#define AllSystem_IN_RISE_INPUT_ERROR2 1
+#define AllSystem_IN_SPINNING          2
+#define AllSystem_IN_STEERING          3
+#define AllSystem_IN_STOP              4
+#define AllSystem_IN_STRAIGHT_DRIVE    5
+#define AllSystem_IN_Safe_drive        2
+#define AllSystem_range                0.01
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -55,6 +66,41 @@ int Steer_deg;
 
 uint8_t cnt_val_8msb = 0;
 uint32_t cnt_val = 0, cnt_val_prev = 0;
+
+struct Ext_AllSystem_U{
+  float sigma_in_deg;               /* '<Root>/sigma_in_deg' */
+  float v_in_norm;                  /* '<Root>/v_in_norm' */
+  float v_max_ms;                   /* '<Root>/v_max_ms' */
+  float encoder_steer_deg[4];       /* '<Root>/alpha_feed_deg' */
+} ;
+
+struct Ext_AllSystem_Y{
+  float alpha_out_deg[6];           /* '<Root>/alpha_out_deg ' */
+  float w_out_rad_s[6];               /* '<Root>/w_out_rad_s ' */
+  bool flag_stop;                 /* '<Root>/flag_stop' */
+  bool flag_straight;             /* '<Root>/flag_straight' */
+  bool flag_steering;             /* '<Root>/flag_steering' */
+  bool flag_busy;                 /* '<Root>/flag_busy' */
+  bool flag_spinning;             /* '<Root>/flag_spinning' */
+  bool input_error_flag;          /* '<Root>/input_error_flag' */
+};
+
+struct DW_AllSystem_T{
+  long temporalCounter_i1;         /* '<S1>/State_selection' */
+  int is_active_c3_AllSystem;      /* '<S1>/State_selection' */
+  int is_c3_AllSystem;             /* '<S1>/State_selection' */
+  int is_Safe_drive;               /* '<S1>/State_selection' */
+};
+
+struct B_AllSystem_T{
+  float alpha_out_rad[6];           /* '<S1>/Merge1' */
+  float v_out_ms[6];                /* '<S1>/Merge' */
+};
+
+struct Ext_AllSystem_U AllSystem_U;
+struct Ext_AllSystem_Y AllSystem_Y;
+struct DW_AllSystem_T AllSystem_DW;
+struct B_AllSystem_T AllSystem_B;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,7 +122,9 @@ void Odrive_status_check(void);
  */
 int main(void) {
 	/* USER CODE BEGIN 1 */
-
+	AllSystem_U.sigma_in_deg = 15;
+	AllSystem_U.v_in_norm = 0.5;
+	AllSystem_U.v_max_ms = 2;
 	/* USER CODE END 1 */
 
 	/* MCU Configuration--------------------------------------------------------*/
@@ -143,15 +191,10 @@ int main(void) {
 
 	HAL_Delay(100);
 
-	Odrive_status_check(); //check the status of the odrives before starting to send velocity data
+	//Odrive_status_check(); //check the status of the odrives before starting to send velocity data
 
 
-
-
-
-
-	int i= 0;
-	int j = 0;
+   // start
 
 //quasi sempre parte, ogni tanto un asse si pianta con errore sul controllere SPINOUT_DETECTED
 
@@ -167,7 +210,7 @@ int main(void) {
 
 		/* USER CODE BEGIN 3 */
 		//before send the velocity, the actuAL STATUS SHOULD BE CHECKED
-		send_Odrive_vel(10);
+		send_Odrive_vel(5);
 
 		send_Steer_Deg(0);
 
@@ -299,6 +342,668 @@ void Odrive_status_check(void) {
 
 }
 
+static void AllSystem_Safe_drive(const bool *bool_i, const float *Product1)
+{
+  float tmp_0;
+  float tmp;
+
+  /* Inport: '<Root>/sigma_in_deg' */
+  tmp = fabsf(AllSystem_U.sigma_in_deg);
+
+  /* Constant: '<S1>/sigma_max_deg' */
+  if ((tmp > 35.0F) && (fabsf(tmp - 90.0F) >= AllSystem_range)) {
+    AllSystem_DW.is_Safe_drive = AllSystem_IN_NO_ACTIVE_CHILD;
+    AllSystem_DW.is_c3_AllSystem = AllSystem_IN_RISE_INPUT_ERROR2;
+
+    /* Outport: '<Root>/flag_stop' */
+    AllSystem_Y.flag_stop = 0;
+
+    /* Outport: '<Root>/flag_straight' */
+    AllSystem_Y.flag_straight = 0;
+
+    /* Outport: '<Root>/flag_steering' */
+    AllSystem_Y.flag_steering = 0;
+
+    /* Outport: '<Root>/flag_busy' */
+    AllSystem_Y.flag_busy = 0;
+
+    /* Outport: '<Root>/flag_spinning' */
+    AllSystem_Y.flag_spinning = 0;
+
+    /* Outport: '<Root>/input_error_flag' */
+    AllSystem_Y.input_error_flag = 1;
+  } else {
+    switch (AllSystem_DW.is_Safe_drive) {
+     case AllSystem_IN_BUSY:
+      if ((AllSystem_DW.temporalCounter_i1 >= 180000U) && (!*bool_i)) {
+        AllSystem_DW.is_Safe_drive = AllSystem_IN_STOP;
+
+        /* Outport: '<Root>/flag_stop' */
+        AllSystem_Y.flag_stop = 1;
+
+        /* Outport: '<Root>/flag_straight' */
+        AllSystem_Y.flag_straight = 0;
+
+        /* Outport: '<Root>/flag_steering' */
+        AllSystem_Y.flag_steering = 0;
+
+        /* Outport: '<Root>/flag_busy' */
+        AllSystem_Y.flag_busy = 0;
+
+        /* Outport: '<Root>/flag_spinning' */
+        AllSystem_Y.flag_spinning = 0;
+
+        /* Outport: '<Root>/input_error_flag' */
+        AllSystem_Y.input_error_flag = 0;
+      } else if (!*bool_i) {
+        AllSystem_DW.is_Safe_drive = AllSystem_IN_BUSY;
+        AllSystem_DW.temporalCounter_i1 = 0U;
+
+        /* Outport: '<Root>/flag_stop' */
+        AllSystem_Y.flag_stop = 0;
+
+        /* Outport: '<Root>/flag_straight' */
+        AllSystem_Y.flag_straight = 0;
+
+        /* Outport: '<Root>/flag_steering' */
+        AllSystem_Y.flag_steering = 0;
+
+        /* Outport: '<Root>/flag_busy' */
+        AllSystem_Y.flag_busy = 1;
+
+        /* Outport: '<Root>/flag_spinning' */
+        AllSystem_Y.flag_spinning = 0;
+
+        /* Outport: '<Root>/input_error_flag' */
+        AllSystem_Y.input_error_flag = 0;
+      } else {
+        AllSystem_DW.is_Safe_drive = AllSystem_IN_SPINNING;
+
+        /* Outport: '<Root>/flag_stop' */
+        AllSystem_Y.flag_stop = 0;
+
+        /* Outport: '<Root>/flag_straight' */
+        AllSystem_Y.flag_straight = 0;
+
+        /* Outport: '<Root>/flag_steering' */
+        AllSystem_Y.flag_steering = 0;
+
+        /* Outport: '<Root>/flag_busy' */
+        AllSystem_Y.flag_busy = 0;
+
+        /* Outport: '<Root>/flag_spinning' */
+        AllSystem_Y.flag_spinning = 1;
+
+        /* Outport: '<Root>/input_error_flag' */
+        AllSystem_Y.input_error_flag = 0;
+      }
+      break;
+
+     case AllSystem_IN_SPINNING:
+      /* Outport: '<Root>/flag_stop' */
+      AllSystem_Y.flag_stop = 0;
+
+      /* Outport: '<Root>/flag_straight' */
+      AllSystem_Y.flag_straight = 0;
+
+      /* Outport: '<Root>/flag_steering' */
+      AllSystem_Y.flag_steering = 0;
+
+      /* Outport: '<Root>/flag_busy' */
+      AllSystem_Y.flag_busy = 0;
+
+      /* Outport: '<Root>/flag_spinning' */
+      AllSystem_Y.flag_spinning = 1;
+
+      /* Outport: '<Root>/input_error_flag' */
+      AllSystem_Y.input_error_flag = 0;
+
+      /* Inport: '<Root>/sigma_in_deg' */
+      if (fabsf(fabsf(AllSystem_U.sigma_in_deg) - 90.0F) >= AllSystem_range) {
+        AllSystem_DW.is_Safe_drive = AllSystem_IN_STOP;
+
+        /* Outport: '<Root>/flag_stop' */
+        AllSystem_Y.flag_stop = 1;
+
+        /* Outport: '<Root>/flag_straight' */
+        AllSystem_Y.flag_straight = 0;
+
+        /* Outport: '<Root>/flag_steering' */
+        AllSystem_Y.flag_steering = 0;
+
+        /* Outport: '<Root>/flag_busy' */
+        AllSystem_Y.flag_busy = 0;
+
+        /* Outport: '<Root>/flag_spinning' */
+        AllSystem_Y.flag_spinning = 0;
+
+        /* Outport: '<Root>/input_error_flag' */
+        AllSystem_Y.input_error_flag = 0;
+      }
+      break;
+
+     case AllSystem_IN_STEERING:
+      /* Outport: '<Root>/flag_stop' */
+      AllSystem_Y.flag_stop = 0;
+
+      /* Outport: '<Root>/flag_straight' */
+      AllSystem_Y.flag_straight = 0;
+
+      /* Outport: '<Root>/flag_steering' */
+      AllSystem_Y.flag_steering = 1;
+
+      /* Outport: '<Root>/flag_busy' */
+      AllSystem_Y.flag_busy = 0;
+
+      /* Outport: '<Root>/flag_spinning' */
+      AllSystem_Y.flag_spinning = 0;
+
+      /* Outport: '<Root>/input_error_flag' */
+      AllSystem_Y.input_error_flag = 0;
+
+      /* Inport: '<Root>/sigma_in_deg' */
+      if ((tmp <= AllSystem_range) || (tmp > 35.0F)) {
+        AllSystem_DW.is_Safe_drive = AllSystem_IN_STOP;
+
+        /* Outport: '<Root>/flag_stop' */
+        AllSystem_Y.flag_stop = 1;
+
+        /* Outport: '<Root>/flag_straight' */
+        AllSystem_Y.flag_straight = 0;
+
+        /* Outport: '<Root>/flag_steering' */
+        AllSystem_Y.flag_steering = 0;
+
+        /* Outport: '<Root>/flag_busy' */
+        AllSystem_Y.flag_busy = 0;
+
+        /* Outport: '<Root>/flag_spinning' */
+        AllSystem_Y.flag_spinning = 0;
+
+        /* Outport: '<Root>/input_error_flag' */
+        AllSystem_Y.input_error_flag = 0;
+      } else {
+        if (fabsf(AllSystem_U.sigma_in_deg) <= AllSystem_range) {
+          AllSystem_DW.is_Safe_drive = AllSystem_IN_STRAIGHT_DRIVE;
+
+          /* Outport: '<Root>/flag_stop' */
+          AllSystem_Y.flag_stop = 0;
+
+          /* Outport: '<Root>/flag_straight' */
+          AllSystem_Y.flag_straight = 1;
+
+          /* Outport: '<Root>/flag_steering' */
+          AllSystem_Y.flag_steering = 0;
+
+          /* Outport: '<Root>/flag_busy' */
+          AllSystem_Y.flag_busy = 0;
+
+          /* Outport: '<Root>/flag_spinning' */
+          AllSystem_Y.flag_spinning = 0;
+
+          /* Outport: '<Root>/input_error_flag' */
+          AllSystem_Y.input_error_flag = 0;
+        }
+      }
+      break;
+
+     case AllSystem_IN_STOP:
+      /* Outport: '<Root>/flag_stop' */
+      AllSystem_Y.flag_stop = 1;
+
+      /* Outport: '<Root>/flag_straight' */
+      AllSystem_Y.flag_straight = 0;
+
+      /* Outport: '<Root>/flag_steering' */
+      AllSystem_Y.flag_steering = 0;
+
+      /* Outport: '<Root>/flag_busy' */
+      AllSystem_Y.flag_busy = 0;
+
+      /* Outport: '<Root>/flag_spinning' */
+      AllSystem_Y.flag_spinning = 0;
+
+      /* Outport: '<Root>/input_error_flag' */
+      AllSystem_Y.input_error_flag = 0;
+      if (!*bool_i) {
+        AllSystem_DW.is_Safe_drive = AllSystem_IN_STOP;
+
+        /* Outport: '<Root>/flag_stop' */
+        AllSystem_Y.flag_stop = 1;
+
+        /* Outport: '<Root>/flag_straight' */
+        AllSystem_Y.flag_straight = 0;
+
+        /* Outport: '<Root>/flag_steering' */
+        AllSystem_Y.flag_steering = 0;
+
+        /* Outport: '<Root>/flag_busy' */
+        AllSystem_Y.flag_busy = 0;
+
+        /* Outport: '<Root>/flag_spinning' */
+        AllSystem_Y.flag_spinning = 0;
+
+        /* Outport: '<Root>/input_error_flag' */
+        AllSystem_Y.input_error_flag = 0;
+      } else {
+        /* Inport: '<Root>/sigma_in_deg' */
+        tmp_0 = fabsf(AllSystem_U.sigma_in_deg);
+
+        /* Inport: '<Root>/sigma_in_deg' */
+        if ((tmp_0 >= AllSystem_range) && (tmp < 35.0F)) {
+          AllSystem_DW.is_Safe_drive = AllSystem_IN_STEERING;
+
+          /* Outport: '<Root>/flag_stop' */
+          AllSystem_Y.flag_stop = 0;
+
+          /* Outport: '<Root>/flag_straight' */
+          AllSystem_Y.flag_straight = 0;
+
+          /* Outport: '<Root>/flag_steering' */
+          AllSystem_Y.flag_steering = 1;
+
+          /* Outport: '<Root>/flag_busy' */
+          AllSystem_Y.flag_busy = 0;
+
+          /* Outport: '<Root>/flag_spinning' */
+          AllSystem_Y.flag_spinning = 0;
+
+          /* Outport: '<Root>/input_error_flag' */
+          AllSystem_Y.input_error_flag = 0;
+        } else if (fabsf(fabsf(AllSystem_U.sigma_in_deg) - 90.0F) <=
+                   AllSystem_range) {
+          AllSystem_DW.is_Safe_drive = AllSystem_IN_BUSY;
+          AllSystem_DW.temporalCounter_i1 = 0U;
+
+          /* Outport: '<Root>/flag_stop' */
+          AllSystem_Y.flag_stop = 0;
+
+          /* Outport: '<Root>/flag_straight' */
+          AllSystem_Y.flag_straight = 0;
+
+          /* Outport: '<Root>/flag_steering' */
+          AllSystem_Y.flag_steering = 0;
+
+          /* Outport: '<Root>/flag_busy' */
+          AllSystem_Y.flag_busy = 1;
+
+          /* Outport: '<Root>/flag_spinning' */
+          AllSystem_Y.flag_spinning = 0;
+
+          /* Outport: '<Root>/input_error_flag' */
+          AllSystem_Y.input_error_flag = 0;
+        } else {
+          if ((fabsf(*Product1) >= AllSystem_range) && (tmp_0 <= AllSystem_range))
+          {
+            AllSystem_DW.is_Safe_drive = AllSystem_IN_STRAIGHT_DRIVE;
+
+            /* Outport: '<Root>/flag_stop' */
+            AllSystem_Y.flag_stop = 0;
+
+            /* Outport: '<Root>/flag_straight' */
+            AllSystem_Y.flag_straight = 1;
+
+            /* Outport: '<Root>/flag_steering' */
+            AllSystem_Y.flag_steering = 0;
+
+            /* Outport: '<Root>/flag_busy' */
+            AllSystem_Y.flag_busy = 0;
+
+            /* Outport: '<Root>/flag_spinning' */
+            AllSystem_Y.flag_spinning = 0;
+
+            /* Outport: '<Root>/input_error_flag' */
+            AllSystem_Y.input_error_flag = 0;
+          }
+        }
+      }
+      break;
+
+     default:
+      /* Outport: '<Root>/flag_stop' */
+      /* case IN_STRAIGHT_DRIVE: */
+      AllSystem_Y.flag_stop = 0;
+
+      /* Outport: '<Root>/flag_straight' */
+      AllSystem_Y.flag_straight = 1;
+
+      /* Outport: '<Root>/flag_steering' */
+      AllSystem_Y.flag_steering = 0;
+
+      /* Outport: '<Root>/flag_busy' */
+      AllSystem_Y.flag_busy = 0;
+
+      /* Outport: '<Root>/flag_spinning' */
+      AllSystem_Y.flag_spinning = 0;
+
+      /* Outport: '<Root>/input_error_flag' */
+      AllSystem_Y.input_error_flag = 0;
+
+      /* Inport: '<Root>/sigma_in_deg' */
+      tmp_0 = fabsf(AllSystem_U.sigma_in_deg);
+      if ((tmp_0 >= AllSystem_range) && (tmp < 35.0F)) {
+        AllSystem_DW.is_Safe_drive = AllSystem_IN_STEERING;
+
+        /* Outport: '<Root>/flag_stop' */
+        AllSystem_Y.flag_stop = 0;
+
+        /* Outport: '<Root>/flag_straight' */
+        AllSystem_Y.flag_straight = 0;
+
+        /* Outport: '<Root>/flag_steering' */
+        AllSystem_Y.flag_steering = 1;
+
+        /* Outport: '<Root>/flag_busy' */
+        AllSystem_Y.flag_busy = 0;
+
+        /* Outport: '<Root>/flag_spinning' */
+        AllSystem_Y.flag_spinning = 0;
+
+        /* Outport: '<Root>/input_error_flag' */
+        AllSystem_Y.input_error_flag = 0;
+      } else {
+        if ((fabsf(*Product1) <= AllSystem_range) || (tmp_0 >= AllSystem_range))
+        {
+          AllSystem_DW.is_Safe_drive = AllSystem_IN_STOP;
+
+          /* Outport: '<Root>/flag_stop' */
+          AllSystem_Y.flag_stop = 1;
+
+          /* Outport: '<Root>/flag_straight' */
+          AllSystem_Y.flag_straight = 0;
+
+          /* Outport: '<Root>/flag_steering' */
+          AllSystem_Y.flag_steering = 0;
+
+          /* Outport: '<Root>/flag_busy' */
+          AllSystem_Y.flag_busy = 0;
+
+          /* Outport: '<Root>/flag_spinning' */
+          AllSystem_Y.flag_spinning = 0;
+
+          /* Outport: '<Root>/input_error_flag' */
+          AllSystem_Y.input_error_flag = 0;
+        }
+      }
+      break;
+    }
+  }
+
+  /* End of Constant: '<S1>/sigma_max_deg' */
+}
+
+
+
+void AllSystem_step(void) {
+
+
+  int i;
+  float rtb_alpha[6];
+  float rtb_alpha_k[6];
+  float Product1;
+  float rtb_alpha_tmp;
+  float rtb_sigma_in_rad;
+
+  bool bool_i;
+
+  /* Product: '<S1>/Product1' incorporates:
+   *  Inport: '<Root>/v_in_norm'
+   *  Inport: '<Root>/v_max_ms'
+   */
+  Product1 = AllSystem_U.v_in_norm * AllSystem_U.v_max_ms;
+
+  bool_i = ((fabsf(AllSystem_U.encoder_steer_deg[0] - AllSystem_Y.alpha_out_deg
+                   [0]) <= 0.5F) || (fabsf(AllSystem_U.encoder_steer_deg[1] -
+              AllSystem_Y.alpha_out_deg[1]) <= 0.5F) || (fabsf
+             (AllSystem_U.encoder_steer_deg[2] - AllSystem_Y.alpha_out_deg[4]) <=
+             0.5F) || (fabsf(AllSystem_U.encoder_steer_deg[3] -
+              AllSystem_Y.alpha_out_deg[5]) <= 0.5F));
+  if (AllSystem_DW.temporalCounter_i1 < 262143U) {
+    AllSystem_DW.temporalCounter_i1++;
+  }
+
+// BYPASS OF ENCODER
+bool_i = 1;
+
+
+  if (AllSystem_DW.is_active_c3_AllSystem == 0U) {
+    AllSystem_DW.is_active_c3_AllSystem = 1U;
+    AllSystem_DW.is_c3_AllSystem = AllSystem_IN_Safe_drive;
+    AllSystem_DW.is_Safe_drive = AllSystem_IN_STOP;
+
+    /* Outport: '<Root>/flag_stop' */
+    AllSystem_Y.flag_stop = 1;
+
+    /* Outport: '<Root>/flag_straight' */
+    AllSystem_Y.flag_straight = 0;
+
+    /* Outport: '<Root>/flag_steering' */
+    AllSystem_Y.flag_steering = 0;
+
+    /* Outport: '<Root>/flag_busy' */
+    AllSystem_Y.flag_busy = 0;
+
+    /* Outport: '<Root>/flag_spinning' */
+    AllSystem_Y.flag_spinning = 0;
+
+    /* Outport: '<Root>/input_error_flag' */
+    AllSystem_Y.input_error_flag = 0;
+  } else if (AllSystem_DW.is_c3_AllSystem == AllSystem_IN_RISE_INPUT_ERROR2) {
+    /* Outport: '<Root>/flag_stop' */
+    AllSystem_Y.flag_stop = 0;
+
+    /* Outport: '<Root>/flag_straight' */
+    AllSystem_Y.flag_straight = 0;
+
+    /* Outport: '<Root>/flag_steering' */
+    AllSystem_Y.flag_steering = 0;
+
+    /* Outport: '<Root>/flag_busy' */
+    AllSystem_Y.flag_busy = 0;
+
+    /* Outport: '<Root>/flag_spinning' */
+    AllSystem_Y.flag_spinning = 0;
+
+    /* Outport: '<Root>/input_error_flag' */
+    AllSystem_Y.input_error_flag = 1;
+
+  rtb_sigma_in_rad = fabsf(AllSystem_U.sigma_in_deg);
+    if ((rtb_sigma_in_rad <= 35.0F) || (fabsf(rtb_sigma_in_rad - 90.0F) <=
+         AllSystem_range)) {
+      AllSystem_DW.is_c3_AllSystem = AllSystem_IN_Safe_drive;
+      AllSystem_DW.is_Safe_drive = AllSystem_IN_STOP;
+
+      /* Outport: '<Root>/flag_stop' */
+      AllSystem_Y.flag_stop = 1;
+
+      /* Outport: '<Root>/flag_straight' */
+      AllSystem_Y.flag_straight = 0;
+
+      /* Outport: '<Root>/flag_steering' */
+      AllSystem_Y.flag_steering = 0;
+
+      /* Outport: '<Root>/flag_busy' */
+      AllSystem_Y.flag_busy = 0;
+
+      /* Outport: '<Root>/flag_spinning' */
+      AllSystem_Y.flag_spinning = 0;
+
+      /* Outport: '<Root>/input_error_flag' */
+      AllSystem_Y.input_error_flag = 0;
+      }
+    }
+
+else {
+    /* case IN_Safe_drive: */
+    AllSystem_Safe_drive(&bool_i, &Product1);
+  }
+
+if (AllSystem_Y.flag_straight) {
+    /* Merge: '<S1>/Merge1' incorporates:
+     *  Constant: '<S6>/Constant'
+     *  SignalConversion generated from: '<S6>/alpha_out_rad'
+     */
+    AllSystem_B.alpha_out_rad[0] = 0.0F;
+    AllSystem_B.alpha_out_rad[1] = 0.0F;
+    AllSystem_B.alpha_out_rad[2] = 0.0F;
+    AllSystem_B.alpha_out_rad[3] = 0.0F;
+    AllSystem_B.alpha_out_rad[4] = 0.0F;
+    AllSystem_B.alpha_out_rad[5] = 0.0F;
+
+    /* Merge: '<S1>/Merge' incorporates:
+     *  Inport: '<S6>/v_in'
+     *  SignalConversion generated from: '<S6>/v_out_ms'
+     */
+    AllSystem_B.v_out_ms[0] = Product1;
+    AllSystem_B.v_out_ms[1] = Product1;
+    AllSystem_B.v_out_ms[2] = Product1;
+    AllSystem_B.v_out_ms[3] = Product1;
+    AllSystem_B.v_out_ms[4] = Product1;
+    AllSystem_B.v_out_ms[5] = Product1;
+  }
+
+  /* End of Outputs for SubSystem: '<S1>/Straight Mode' */
+
+  /* Outputs for Enabled SubSystem: '<S1>/Steering Mode (Ackerman)' incorporates:
+   *  EnablePort: '<S4>/Enable'
+   */
+  /* Outport: '<Root>/flag_steering' */
+  if (AllSystem_Y.flag_steering) {
+    /* Gain: '<S4>/Gain' incorporates:
+     *  Inport: '<Root>/sigma_in_deg'
+     */
+    rtb_sigma_in_rad = 0.0174532924F * AllSystem_U.sigma_in_deg;
+
+    /* MATLAB Function: '<S4>/Ackerman_angles' incorporates:
+     *  Constant: '<S1>/a_m'
+     *  Constant: '<S1>/d_m'
+     *  Constant: '<S1>/e_m'
+     */
+    rtb_alpha_tmp = tanf(rtb_sigma_in_rad);
+    rtb_alpha[0] = atanf(0.606F / (0.606F / rtb_alpha_tmp + 0.39F));
+    rtb_alpha[1] = atanf(0.606F / (0.606F / tanf(rtb_sigma_in_rad) - 0.39F));
+    rtb_alpha[2] = 0.0F;
+    rtb_alpha[3] = 0.0F;
+    rtb_alpha[4] = -atanf(0.593F / (0.593F / rtb_alpha_tmp + 0.39F));
+    rtb_alpha[5] = -atanf(0.593F / (0.593F / tanf(rtb_sigma_in_rad) - 0.39F));
+
+    /* MATLAB Function: '<S4>/Ackerman_velocities' incorporates:
+     *  Merge: '<S1>/Merge'
+     */
+    rtb_sigma_in_rad = sinf(rtb_sigma_in_rad);
+    AllSystem_B.v_out_ms[0] = fabsf(sinf(rtb_alpha[0]) / rtb_sigma_in_rad) *
+      Product1;
+    AllSystem_B.v_out_ms[1] = fabsf(sinf(rtb_alpha[1]) / rtb_sigma_in_rad) *
+      Product1;
+    AllSystem_B.v_out_ms[2] = Product1;
+    AllSystem_B.v_out_ms[3] = Product1;
+    AllSystem_B.v_out_ms[4] = fabsf(sinf(rtb_alpha[4]) / rtb_sigma_in_rad) *
+      Product1;
+    AllSystem_B.v_out_ms[5] = fabsf(sinf(rtb_alpha[5]) / rtb_sigma_in_rad) *
+      Product1;
+    for (i = 0; i < 6; i++) {
+      /* Merge: '<S1>/Merge1' incorporates:
+       *  SignalConversion generated from: '<S4>/alpha_out_rad'
+       */
+      AllSystem_B.alpha_out_rad[i] = rtb_alpha[i];
+    }
+  }
+
+  /* End of Outputs for SubSystem: '<S1>/Steering Mode (Ackerman)' */
+
+  /* Outputs for Enabled SubSystem: '<S1>/Spinning Mode' incorporates:
+   *  EnablePort: '<S2>/Enable'
+   */
+  /* Logic: '<S1>/OR' incorporates:
+   *  Outport: '<Root>/flag_busy'
+   *  Outport: '<Root>/flag_spinning'
+   */
+  if (AllSystem_Y.flag_spinning || AllSystem_Y.flag_busy) {
+    /* MATLAB Function: '<S2>/MATLAB Function' incorporates:
+     *  Constant: '<S1>/a_m'
+     *  Constant: '<S1>/d_m'
+     *  Constant: '<S1>/e_m'
+     */
+    for (i = 0; i < 6; i++) {
+      AllSystem_B.v_out_ms[i] = 0.0F;
+    }
+
+    if (!AllSystem_Y.flag_busy) {
+      AllSystem_B.v_out_ms[0] = Product1 * 0.720649719F;
+      AllSystem_B.v_out_ms[1] = -AllSystem_B.v_out_ms[0];
+      AllSystem_B.v_out_ms[2] = Product1 * 0.39F;
+      AllSystem_B.v_out_ms[3] = -AllSystem_B.v_out_ms[2];
+      AllSystem_B.v_out_ms[4] = Product1 * 0.709752738F;
+      AllSystem_B.v_out_ms[5] = -AllSystem_B.v_out_ms[4];
+    }
+
+    /* End of MATLAB Function: '<S2>/MATLAB Function' */
+
+    /* MATLAB Function: '<S2>/Spinning_angles' incorporates:
+     *  Constant: '<S1>/a_m'
+     *  Constant: '<S1>/d_m'
+     *  Constant: '<S1>/e_m'
+     */
+    rtb_alpha_k[0] = 0.998958647F;
+    rtb_alpha_k[1] = -0.998958647F;
+    rtb_alpha_k[2] = 0.0F;
+    rtb_alpha_k[3] = 0.0F;
+    rtb_alpha_k[4] = -0.989046097F;
+    rtb_alpha_k[5] = 0.989046097F;
+    for (i = 0; i < 6; i++) {
+      /* Merge: '<S1>/Merge1' incorporates:
+       *  SignalConversion generated from: '<S2>/alpha_out_rad'
+       */
+      AllSystem_B.alpha_out_rad[i] = rtb_alpha_k[i];
+    }
+  }
+
+  /* End of Logic: '<S1>/OR' */
+  /* End of Outputs for SubSystem: '<S1>/Spinning Mode' */
+
+  /* Outputs for Enabled SubSystem: '<S1>/Stop Mode' incorporates:
+   *  EnablePort: '<S5>/Enable'
+   */
+  /* Outport: '<Root>/flag_stop' */
+  if (AllSystem_Y.flag_stop) {
+    /* Merge: '<S1>/Merge1' incorporates:
+     *  Constant: '<S5>/Constant'
+     *  SignalConversion generated from: '<S5>/alpha_out_rad'
+     */
+    AllSystem_B.alpha_out_rad[0] = 0.0F;
+    AllSystem_B.alpha_out_rad[1] = 0.0F;
+    AllSystem_B.alpha_out_rad[2] = 0.0F;
+    AllSystem_B.alpha_out_rad[3] = 0.0F;
+    AllSystem_B.alpha_out_rad[4] = 0.0F;
+    AllSystem_B.alpha_out_rad[5] = 0.0F;
+
+    /* Merge: '<S1>/Merge' incorporates:
+     *  Constant: '<S5>/Constant1'
+     *  SignalConversion generated from: '<S5>/v_out_ms'
+     */
+    AllSystem_B.v_out_ms[0] = 0.0F;
+    AllSystem_B.v_out_ms[1] = 0.0F;
+    AllSystem_B.v_out_ms[2] = 0.0F;
+    AllSystem_B.v_out_ms[3] = 0.0F;
+    AllSystem_B.v_out_ms[4] = 0.0F;
+    AllSystem_B.v_out_ms[5] = 0.0F;
+  }
+
+  /* End of Outputs for SubSystem: '<S1>/Stop Mode' */
+  for (i = 0; i < 6; i++) {
+    /* Gain: '<S1>/Gain1' incorporates:
+     *  UnitDelay: '<S1>/Unit Delay'
+     */
+    AllSystem_Y.alpha_out_deg[i] = 57.2957802F * AllSystem_B.alpha_out_rad[i];
+
+    /* Outport: '<Root>/w_out_rad_s ' incorporates:
+     *  Constant: '<S1>/R_m '
+     *  Product: '<S1>/Product'
+     */
+    AllSystem_Y.w_out_rad_s[i] = AllSystem_B.v_out_ms[i] / 0.35;
+  }
+
+}
 /* USER CODE END 4 */
 
 /**
